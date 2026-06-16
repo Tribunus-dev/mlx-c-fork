@@ -34,8 +34,8 @@ if(MLX_C_USE_SYSTEM_MLX)
 else()
   FetchContent_Declare(
     mlx
-    GIT_REPOSITORY "https://github.com/ml-explore/mlx.git"
-    GIT_TAG v0.31.2)
+    GIT_REPOSITORY "https://github.com/Tribunus-dev/mlx.git"
+    GIT_TAG tribunus-v0.31.2)
   FetchContent_MakeAvailable(mlx)
 endif()
 

@@ -38,6 +38,19 @@ int mlx_set_cache_limit(size_t* res, size_t limit);
 int mlx_set_memory_limit(size_t* res, size_t limit);
 int mlx_set_wired_limit(size_t* res, size_t limit);
 
+/**
+ * Set the output buffer hint for the next Metal allocation.
+ * When the next malloc(size) matches hint_size exactly, the Metal
+ * allocator wraps ptr as an MTLBuffer instead of allocating new
+ * memory.  The hint is consumed atomically on first use.
+ */
+int mlx_set_output_buffer_hint(void* ptr, size_t size);
+
+/**
+ * Clear the output buffer hint without consuming it.
+ */
+int mlx_clear_output_buffer_hint(void);
+
 /**@}*/
 
 #ifdef __cplusplus

@@ -7,6 +7,7 @@
 #include "mlx/c/error.h"
 #include "mlx/c/private/mlx.h"
 #include "mlx/memory.h"
+#include "mlx/allocator.h"
 
 extern "C" int mlx_clear_cache(void) {
   try {
@@ -80,9 +81,30 @@ extern "C" int mlx_set_memory_limit(size_t* res, size_t limit) {
   }
   return 0;
 }
-extern "C" int mlx_set_wired_limit(size_t* res, size_t limit) {
+int mlx_set_wired_limit(size_t* res, size_t limit) {
   try {
     *res = mlx::core::set_wired_limit(limit);
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int mlx_set_output_buffer_hint(void* ptr, size_t size) {
+extern "C" int mlx_set_wired_limit(size_t* res, size_t limit) {
+  try {
+    mlx::core::allocator::set_output_hint(ptr, size);
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int mlx_clear_output_buffer_hint(void) {
+  try {
+    mlx::core::allocator::clear_output_hint();
   } catch (std::exception& e) {
     mlx_error(e.what());
     return 1;
