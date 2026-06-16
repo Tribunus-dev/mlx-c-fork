@@ -12,8 +12,17 @@ if(NOT MLX_C_VERSION)
 endif()
 
 option(BUILD_SHARED_LIBS "Build mlx C as a shared library" OFF)
-option(MLX_C_BUILD_EXAMPLES "Build examples for mlx C" ON)
+option(MLX_C_BUILD_EXAMPLES "Build examples for mlx C" OFF)
+option(MLX_C_BUILD_TESTS "Build tests for mlx C" ON)
 option(MLX_C_USE_SYSTEM_MLX "Use system MLX" OFF)
+
+option(MLX_C_ENABLE_MLX_BACKEND "Enable upstream MLX compilation" ON)
+option(MLX_C_ENABLE_LAPACK "Enable LAPACK dependent targets in upstream MLX" ON)
+option(MLX_C_ENABLE_ACCELERATE "Enable Accelerate (macOS) in upstream MLX" ON)
+
+if(MLX_C_BUILD_TESTS)
+  enable_testing()
+endif()
 
 # ----------------------------- mlx -----------------------------
 
@@ -23,20 +32,28 @@ if(POLICY CMP0135)
   cmake_policy(SET CMP0135 NEW)
 endif()
 
-# mlx
-set(MLX_BUILD_TESTS OFF)
-set(MLX_BUILD_EXAMPLES OFF)
-set(MLX_BUILD_BENCHMARKS OFF)
-set(MLX_BUILD_PYTHON_BINDINGS OFF)
+if(MLX_C_ENABLE_MLX_BACKEND)
+  # Pass options to upstream MLX
+  set(MLX_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(MLX_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(MLX_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+  set(MLX_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
 
-if(MLX_C_USE_SYSTEM_MLX)
-  find_package(MLX REQUIRED)
-else()
-  FetchContent_Declare(
-    mlx
-    GIT_REPOSITORY "https://github.com/ml-explore/mlx.git"
-    GIT_TAG v0.31.2)
-  FetchContent_MakeAvailable(mlx)
+  if(NOT MLX_C_ENABLE_LAPACK)
+    if(NOT APPLE)
+      set(MLX_BUILD_CPU OFF CACHE BOOL "" FORCE)
+    endif()
+  endif()
+
+  if(MLX_C_USE_SYSTEM_MLX)
+    find_package(MLX REQUIRED)
+  else()
+    FetchContent_Declare(
+      mlx
+      GIT_REPOSITORY "https://github.com/ml-explore/mlx.git"
+      GIT_TAG v0.31.2)
+    FetchContent_MakeAvailable(mlx)
+  endif()
 endif()
 
 # ----------------------------- lib -----------------------------
@@ -67,12 +84,30 @@ set(mlxc-src
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/transforms.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/transforms_impl.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/vector.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/mlx/c/version.cpp)
+    ${CMAKE_CURRENT_LIST_DIR}/mlx/c/version.cpp
 
-add_library(mlxc ${mlxc-src})
+    # New ABI sources
+    ${CMAKE_CURRENT_LIST_DIR}/mlx_c/status.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mlx_c/context.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mlx_c/array.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mlx_c/version.cpp)
 
-target_link_libraries(mlxc PRIVATE mlx)
+if(MLX_C_ENABLE_MLX_BACKEND)
+  add_library(mlxc ${mlxc-src})
+  target_link_libraries(mlxc PRIVATE mlx)
+  target_compile_definitions(mlxc PRIVATE MLX_C_ENABLE_MLX_BACKEND)
+else()
+  # Build a stub backend without MLX. We need to exclude mlx/c/* which requires mlx headers.
+  set(mlxc-stub-src
+      ${CMAKE_CURRENT_LIST_DIR}/mlx_c/status.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/mlx_c/context.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/mlx_c/array.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/mlx_c/version.cpp)
+  add_library(mlxc ${mlxc-stub-src})
+endif()
+
 target_include_directories(mlxc
+                           PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
                            PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>)
 set_property(TARGET mlxc PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -83,6 +118,10 @@ endif()
 
 if(MLX_C_BUILD_EXAMPLES)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/examples)
+endif()
+
+if(MLX_C_BUILD_TESTS)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/tests)
 endif()
 
 # ----------------------------- Installation -----------------------------
@@ -106,6 +145,13 @@ install(
   FILES_MATCHING
   PATTERN "*.h"
   PATTERN "private" EXCLUDE)
+
+install(
+  DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/include/mlx_c
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  COMPONENT headers
+  FILES_MATCHING
+  PATTERN "*.h")
 
 # Install cmake config
 set(MLX_C_CMAKE_BUILD_CONFIG ${CMAKE_BINARY_DIR}/MLXCConfig.cmake)
