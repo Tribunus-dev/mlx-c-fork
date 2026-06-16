@@ -81,7 +81,7 @@ extern "C" int mlx_set_memory_limit(size_t* res, size_t limit) {
   }
   return 0;
 }
-int mlx_set_wired_limit(size_t* res, size_t limit) {
+extern "C" int mlx_set_wired_limit(size_t* res, size_t limit) {
   try {
     *res = mlx::core::set_wired_limit(limit);
   } catch (std::exception& e) {
@@ -91,8 +91,9 @@ int mlx_set_wired_limit(size_t* res, size_t limit) {
   return 0;
 }
 
+// ── Output buffer hint (Tribunus) ─────────────────────────────────────────
+
 extern "C" int mlx_set_output_buffer_hint(void* ptr, size_t size) {
-extern "C" int mlx_set_wired_limit(size_t* res, size_t limit) {
   try {
     mlx::core::allocator::set_output_hint(ptr, size);
   } catch (std::exception& e) {
