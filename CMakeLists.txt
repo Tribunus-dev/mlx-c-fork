@@ -90,6 +90,7 @@ set(mlxc-src
     ${CMAKE_CURRENT_LIST_DIR}/mlx_c/status.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx_c/context.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx_c/array.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mlx_c/ops.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx_c/version.cpp)
 
 if(MLX_C_ENABLE_MLX_BACKEND)
@@ -102,6 +103,7 @@ else()
       ${CMAKE_CURRENT_LIST_DIR}/mlx_c/status.cpp
       ${CMAKE_CURRENT_LIST_DIR}/mlx_c/context.cpp
       ${CMAKE_CURRENT_LIST_DIR}/mlx_c/array.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/mlx_c/ops.cpp
       ${CMAKE_CURRENT_LIST_DIR}/mlx_c/version.cpp)
   add_library(mlxc ${mlxc-stub-src})
 endif()

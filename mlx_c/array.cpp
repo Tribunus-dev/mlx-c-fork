@@ -5,6 +5,7 @@
 
 #ifdef MLX_C_ENABLE_MLX_BACKEND
 #include "mlx/array.h"
+#include "mlx/ops.h"
 #endif
 
 struct mlx_c_array {
@@ -46,14 +47,19 @@ extern "C" mlx_c_status_t mlx_c_array_create_from_f32(
     size_t total_elements = 1;
     for (size_t i = 0; i < ndim; ++i) {
         if (shape[i] <= 0) {
-            return {MLX_C_STATUS_INVALID_ARGUMENT, "mlx_c_array_create_from_f32", "dimensions must be strictly positive"};
+            return {MLX_C_STATUS_SHAPE_ERROR, "mlx_c_array_create_from_f32", "dimensions must be strictly positive"};
+        }
+
+        // check that int64_t doesn't exceed INT_MAX before we cast it into std::vector<int>
+        if (shape[i] > 2147483647LL) { // INT_MAX
+            return {MLX_C_STATUS_SHAPE_ERROR, "mlx_c_array_create_from_f32", "dimension exceeds INT_MAX"};
         }
 
         // overflow check
         size_t prev = total_elements;
         total_elements *= shape[i];
         if (total_elements / shape[i] != prev) {
-            return {MLX_C_STATUS_INVALID_ARGUMENT, "mlx_c_array_create_from_f32", "shape multiplication overflow"};
+            return {MLX_C_STATUS_SHAPE_ERROR, "mlx_c_array_create_from_f32", "shape multiplication overflow"};
         }
     }
 
@@ -185,18 +191,22 @@ extern "C" mlx_c_status_t mlx_c_array_copy_to_f32(const mlx_c_array_t* array, fl
 #else
     try {
         if (array->arr.dtype() != mlx::core::float32) {
-            return {MLX_C_STATUS_INVALID_ARGUMENT, "mlx_c_array_copy_to_f32", "array is not float32"};
+            return {MLX_C_STATUS_DTYPE_UNSUPPORTED, "mlx_c_array_copy_to_f32", "array is not float32"};
+        }
+
+        size_t arr_size = array->arr.size();
+        if (capacity < arr_size) {
+            return {MLX_C_STATUS_SHAPE_ERROR, "mlx_c_array_copy_to_f32", "capacity is too small"};
         }
 
         // This evaluates the array before fetching its data.
         const_cast<mlx::core::array&>(array->arr).eval();
 
-        size_t arr_size = array->arr.size();
-        if (capacity < arr_size) {
-            return {MLX_C_STATUS_INVALID_ARGUMENT, "mlx_c_array_copy_to_f32", "capacity is too small"};
-        }
+        // If the array has strides/is a view, we need a contiguous array to copy it properly
+        mlx::core::array contig_arr = mlx::core::contiguous(array->arr);
+        contig_arr.eval();
 
-        const float* arr_data = array->arr.data<float>();
+        const float* arr_data = contig_arr.data<float>();
         for (size_t i = 0; i < arr_size; ++i) {
             data_out[i] = arr_data[i];
         }

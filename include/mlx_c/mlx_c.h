@@ -5,5 +5,6 @@
 #include "mlx_c/version.h"
 #include "mlx_c/context.h"
 #include "mlx_c/array.h"
+#include "mlx_c/ops.h"
 
 #endif // MLX_C_H
