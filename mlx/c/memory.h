@@ -50,6 +50,23 @@ int mlx_set_output_buffer_hint(void* ptr, size_t size);
  * Clear the output buffer hint without consuming it.
  */
 int mlx_clear_output_buffer_hint(void);
+/**
+ * Memory plan slot — pre-assigned IOSurface slice for one allocation.
+ */
+typedef struct {
+    void*    iosurface_ptr;
+    size_t   size;
+} mlx_memory_plan_slot;
+
+/**
+ * Set the memory plan for the Metal allocator.
+ */
+int mlx_set_memory_plan(size_t num_slots, const mlx_memory_plan_slot* slots);
+
+/**
+ * Clear the memory plan.
+ */
+int mlx_clear_memory_plan(void);
 
 /**@}*/
 

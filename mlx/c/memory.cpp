@@ -8,6 +8,9 @@
 #include "mlx/c/private/mlx.h"
 #include "mlx/memory.h"
 #include "mlx/allocator.h"
+#ifdef MLX_BUILD_METAL
+#include "mlx/backend/metal/allocator.h"
+#endif
 
 extern "C" int mlx_clear_cache(void) {
   try {
@@ -110,5 +113,34 @@ extern "C" int mlx_clear_output_buffer_hint(void) {
     mlx_error(e.what());
     return 1;
   }
+  return 0;
+}
+
+extern "C" int mlx_set_memory_plan(size_t num_slots, const mlx_memory_plan_slot* slots) {
+#ifdef MLX_BUILD_METAL
+  try {
+    mlx::core::metal::allocator().set_memory_plan(
+        num_slots,
+        reinterpret_cast<const mlx::core::metal::PlanEntry*>(slots));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+}
+#else
+  (void)num_slots;
+  (void)slots;
+#endif
+  return 0;
+}
+
+extern "C" int mlx_clear_memory_plan(void) {
+#ifdef MLX_BUILD_METAL
+  try {
+    mlx::core::metal::allocator().clear_memory_plan();
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+}
+#endif
   return 0;
 }
