@@ -2,6 +2,7 @@
 #define GGUF_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -76,6 +77,47 @@ typedef struct gguf_array {
     uint64_t len;
     void* data;
 } gguf_array_t;
+
+// Session 3 (LLaMA) GGUF load API
+typedef gguf_value_type_t gguf_type;
+
+typedef struct {
+    char magic[4];
+    uint32_t version;
+    uint64_t tensor_count;
+    uint64_t kv_count;
+} gguf_header;
+
+typedef struct {
+    char *name;
+    uint32_t ndim;
+    uint64_t shape[4];
+    gguf_type type;
+    uint64_t offset;
+    void *data;
+} gguf_tensor_info;
+
+typedef struct {
+    char *name;
+    gguf_type type;
+    void *value;
+} gguf_kv_info;
+
+typedef struct {
+    gguf_header header;
+    gguf_kv_info *kvs;
+    gguf_tensor_info *tensors;
+    void *mmap_addr;
+    size_t mmap_size;
+    int fd;
+    uint64_t alignment;
+    uint64_t data_offset;
+} gguf_context;
+
+gguf_context* gguf_load(const char *filename);
+void gguf_free(gguf_context *ctx);
+gguf_tensor_info* gguf_get_tensor(gguf_context *ctx, const char *name);
+
 
 #ifdef __cplusplus
 }

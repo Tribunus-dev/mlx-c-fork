@@ -210,3 +210,145 @@ bool gguf_file_metadata(gguf_file_t* f, uint32_t index, const char** key, gguf_v
     
     return true;
 }
+
+// ---- Session 3 GGUF load API ----
+
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define GGUF_DEFAULT_ALIGNMENT 32
+
+static size_t read_string_gguf(const char *data, size_t offset, char **out_str) {
+    uint64_t len = *(uint64_t *)(data + offset);
+    offset += sizeof(uint64_t);
+    *out_str = malloc(len + 1);
+    memcpy(*out_str, data + offset, len);
+    (*out_str)[len] = '\0';
+    return offset + len;
+}
+
+static size_t skip_value_gguf(const char *data, size_t offset, gguf_type type) {
+    switch (type) {
+        case GGUF_TYPE_UINT8: case GGUF_TYPE_INT8: case GGUF_TYPE_BOOL: return offset + 1;
+        case GGUF_TYPE_UINT16: case GGUF_TYPE_INT16: return offset + 2;
+        case GGUF_TYPE_UINT32: case GGUF_TYPE_INT32: case GGUF_TYPE_FLOAT32: return offset + 4;
+        case GGUF_TYPE_UINT64: case GGUF_TYPE_INT64: case GGUF_TYPE_FLOAT64: return offset + 8;
+        case GGUF_TYPE_STRING: {
+            uint64_t len = *(uint64_t *)(data + offset);
+            return offset + sizeof(uint64_t) + len;
+        }
+        case GGUF_TYPE_ARRAY: {
+            gguf_type item_type = *(uint32_t *)(data + offset);
+            offset += sizeof(uint32_t);
+            uint64_t item_count = *(uint64_t *)(data + offset);
+            offset += sizeof(uint64_t);
+            for (uint64_t i = 0; i < item_count; i++) {
+                offset = skip_value_gguf(data, offset, item_type);
+            }
+            return offset;
+        }
+        default: return offset;
+    }
+}
+
+gguf_context* gguf_load(const char *filename) {
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) return NULL;
+
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        close(fd);
+        return NULL;
+    }
+
+    void *addr = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (addr == MAP_FAILED) {
+        close(fd);
+        return NULL;
+    }
+
+    gguf_context *ctx = calloc(1, sizeof(gguf_context));
+    ctx->fd = fd;
+    ctx->mmap_addr = addr;
+    ctx->mmap_size = st.st_size;
+    ctx->alignment = GGUF_DEFAULT_ALIGNMENT;
+
+    const char *data = (const char *)addr;
+    size_t offset = 0;
+
+    memcpy(&ctx->header, data + offset, sizeof(gguf_header));
+    offset += sizeof(gguf_header);
+
+    if (strncmp(ctx->header.magic, "GGUF", 4) != 0) {
+        gguf_free(ctx);
+        return NULL;
+    }
+
+    ctx->kvs = calloc(ctx->header.kv_count, sizeof(gguf_kv_info));
+    for (uint64_t i = 0; i < ctx->header.kv_count; i++) {
+        offset = read_string_gguf(data, offset, &ctx->kvs[i].name);
+        ctx->kvs[i].type = *(uint32_t *)(data + offset);
+        offset += sizeof(uint32_t);
+        ctx->kvs[i].value = (void *)(data + offset);
+        if (strcmp(ctx->kvs[i].name, "general.alignment") == 0 && ctx->kvs[i].type == GGUF_TYPE_UINT32) {
+            ctx->alignment = *(uint32_t *)ctx->kvs[i].value;
+        }
+        offset = skip_value_gguf(data, offset, ctx->kvs[i].type);
+    }
+
+    ctx->tensors = calloc(ctx->header.tensor_count, sizeof(gguf_tensor_info));
+    for (uint64_t i = 0; i < ctx->header.tensor_count; i++) {
+        offset = read_string_gguf(data, offset, &ctx->tensors[i].name);
+        ctx->tensors[i].ndim = *(uint32_t *)(data + offset);
+        offset += sizeof(uint32_t);
+        for (uint32_t j = 0; j < ctx->tensors[i].ndim; j++) {
+            ctx->tensors[i].shape[j] = *(uint64_t *)(data + offset);
+            offset += sizeof(uint64_t);
+        }
+        ctx->tensors[i].type = *(uint32_t *)(data + offset);
+        offset += sizeof(uint32_t);
+        ctx->tensors[i].offset = *(uint64_t *)(data + offset);
+        offset += sizeof(uint64_t);
+    }
+
+    ctx->data_offset = (offset + ctx->alignment - 1) & ~(ctx->alignment - 1);
+    for (uint64_t i = 0; i < ctx->header.tensor_count; i++) {
+        ctx->tensors[i].data = (void *)(data + ctx->data_offset + ctx->tensors[i].offset);
+    }
+    return ctx;
+}
+
+void gguf_free(gguf_context *ctx) {
+    if (!ctx) return;
+    if (ctx->kvs) {
+        for (uint64_t i = 0; i < ctx->header.kv_count; i++) {
+            free(ctx->kvs[i].name);
+        }
+        free(ctx->kvs);
+    }
+    if (ctx->tensors) {
+        for (uint64_t i = 0; i < ctx->header.tensor_count; i++) {
+            free(ctx->tensors[i].name);
+        }
+        free(ctx->tensors);
+    }
+    if (ctx->mmap_addr) {
+        munmap(ctx->mmap_addr, ctx->mmap_size);
+    }
+    if (ctx->fd >= 0) {
+        close(ctx->fd);
+    }
+    free(ctx);
+}
+
+gguf_tensor_info* gguf_get_tensor(gguf_context *ctx, const char *name) {
+    if (!ctx || !name) return NULL;
+    for (uint64_t i = 0; i < ctx->header.tensor_count; i++) {
+        if (strcmp(ctx->tensors[i].name, name) == 0) {
+            return &ctx->tensors[i];
+        }
+    }
+    return NULL;
+}
