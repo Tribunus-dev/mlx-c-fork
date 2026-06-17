@@ -1,169 +1,128 @@
-#include "mlx_c/llama.h"
-#include "gguf.h"
+#include "../include/llama.h"
+#include "mlx/c/ops.h"
+#include "mlx/c/fast.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <math.h>
 
-#ifndef MLX_BACKEND
-static mlx_array mock_mlx_array_new(void) {
-    mlx_array a;
-    a.ctx = NULL;
-    return a;
+mlx_array rms_norm(mlx_array x, mlx_array weight, float eps) {
+    mlx_array res ={NULL};
+    mlx_fast_rms_norm(&res, x, weight, eps, (mlx_stream){NULL});
+    return res;
 }
 
-static mlx_array mock_mlx_array_new_data(void *data, const int *shape, int ndim) {
-    mlx_array a;
-    a.ctx = data ? data : (void*)1; // Just non-null for test check
-    return a;
+mlx_array rope(mlx_array x, int n_heads, int n_kv_heads, int pos, float freq_base, float freq_scale) {
+    mlx_optional_float base = {true, freq_base};
+    mlx_array res ={NULL};
+    int head_dim = 0;
+    mlx_fast_rope(&res, x, head_dim, false, base, freq_scale, pos, (mlx_array){NULL}, (mlx_stream){NULL});
+    return res;
 }
 
-static void mock_mlx_array_free(mlx_array a) {
-    // nothing
-}
-#endif
+mlx_array swiglu(mlx_array x, mlx_array gate, mlx_array up) {
+    mlx_array sig_x ={NULL};
+    mlx_sigmoid(&sig_x, x, (mlx_stream){NULL});
+    
+    mlx_array x_sig_x ={NULL};
+    mlx_multiply(&x_sig_x, x, sig_x, (mlx_stream){NULL});
+    mlx_array_free(sig_x);
 
-static mlx_array load_tensor_array(gguf_context *ctx, const char *name) {
-    gguf_tensor_info *t = gguf_get_tensor(ctx, name);
-    if (!t) {
-#ifdef MLX_BACKEND
-        return mlx_array_new();
-#else
-        return mock_mlx_array_new();
-#endif
+    mlx_array res ={NULL};
+    mlx_multiply(&res, x_sig_x, up, (mlx_stream){NULL});
+    mlx_array_free(x_sig_x);
+    
+    return res;
+}
+
+mlx_array attention(mlx_array q, mlx_array k, mlx_array v, mlx_array mask) {
+    mlx_array res ={NULL};
+    mlx_fast_scaled_dot_product_attention(&res, q, k, v, 1.0f, "causal", mask, (mlx_array){NULL}, (mlx_stream){NULL});
+    return res;
+}
+
+mlx_array llm_forward(struct llama_model* m, mlx_array tokens, int n_tokens) {
+    mlx_array x ={NULL};
+    mlx_take(&x, m->tok_embeddings, tokens, (mlx_stream){NULL});
+
+    int head_dim = m->dim / m->n_heads;
+    float scale = 1.0f / sqrtf((float)head_dim);
+
+    for (int i = 0; i < m->n_layers; i++) {
+        struct llama_layer* l = &m->layers[i];
+
+        mlx_array normed_x = rms_norm(x, l->attention_norm_weight, m->norm_eps);
+
+        mlx_array q ={NULL}, k ={NULL}, v ={NULL};
+        mlx_matmul(&q, normed_x, l->attention_wq, (mlx_stream){NULL});
+        mlx_matmul(&k, normed_x, l->attention_wk, (mlx_stream){NULL});
+        mlx_matmul(&v, normed_x, l->attention_wv, (mlx_stream){NULL});
+
+        int q_shape[] = {1, n_tokens, m->n_heads, head_dim};
+        int kv_shape[] = {1, n_tokens, m->n_kv_heads, head_dim};
+
+        mlx_array q_reshaped ={NULL}, k_reshaped ={NULL}, v_reshaped ={NULL};
+        mlx_reshape(&q_reshaped, q, q_shape, 4, (mlx_stream){NULL});
+        mlx_reshape(&k_reshaped, k, kv_shape, 4, (mlx_stream){NULL});
+        mlx_reshape(&v_reshaped, v, kv_shape, 4, (mlx_stream){NULL});
+        mlx_array_free(q);
+        mlx_array_free(k);
+        mlx_array_free(v);
+
+        mlx_array q_rope = rope(q_reshaped, m->n_heads, m->n_kv_heads, 0, m->rope_freq_base, m->rope_freq_scale);
+        mlx_array k_rope = rope(k_reshaped, m->n_heads, m->n_kv_heads, 0, m->rope_freq_base, m->rope_freq_scale);
+        mlx_array_free(q_reshaped);
+        mlx_array_free(k_reshaped);
+
+        mlx_array attn_out ={NULL};
+        mlx_fast_scaled_dot_product_attention(&attn_out, q_rope, k_rope, v_reshaped, scale, "causal", (mlx_array){NULL}, (mlx_array){NULL}, (mlx_stream){NULL});
+        mlx_array_free(q_rope);
+        mlx_array_free(k_rope);
+        mlx_array_free(v_reshaped);
+
+        int out_shape[] = {1, n_tokens, m->dim};
+        mlx_array attn_flat ={NULL};
+        mlx_reshape(&attn_flat, attn_out, out_shape, 3, (mlx_stream){NULL});
+        mlx_array_free(attn_out);
+
+        mlx_array proj_out ={NULL};
+        mlx_matmul(&proj_out, attn_flat, l->attention_wo, (mlx_stream){NULL});
+        mlx_array_free(attn_flat);
+
+        mlx_array x_added1 ={NULL};
+        mlx_add(&x_added1, x, proj_out, (mlx_stream){NULL});
+        mlx_array_free(x);
+        mlx_array_free(proj_out);
+        mlx_array_free(normed_x);
+        x = x_added1;
+
+        mlx_array normed_ffn = rms_norm(x, l->ffn_norm_weight, m->norm_eps);
+
+        mlx_array gate ={NULL}, up ={NULL};
+        mlx_matmul(&gate, normed_ffn, l->ffn_w1, (mlx_stream){NULL});
+        mlx_matmul(&up, normed_ffn, l->ffn_w3, (mlx_stream){NULL});
+
+        mlx_array swiglu_out = swiglu(gate, gate, up);
+        mlx_array_free(gate);
+        mlx_array_free(up);
+
+        mlx_array down ={NULL};
+        mlx_matmul(&down, swiglu_out, l->ffn_w2, (mlx_stream){NULL});
+        mlx_array_free(swiglu_out);
+
+        mlx_array x_added2 ={NULL};
+        mlx_add(&x_added2, x, down, (mlx_stream){NULL});
+        mlx_array_free(x);
+        mlx_array_free(down);
+        mlx_array_free(normed_ffn);
+        x = x_added2;
     }
-    
-    int shape[4] = {1, 1, 1, 1};
-    for (uint32_t i = 0; i < t->ndim && i < 4; i++) {
-        shape[i] = (int)t->shape[i];
-    }
-    
-#ifdef MLX_BACKEND
-    // In real MLX backend, we map to mlx_dtype. Here we assume FLOAT32 for simplicity.
-    // In practice, we'd map GGUF types like F16 to MLX_FLOAT16.
-    return mlx_array_new_data(t->data, shape, t->ndim, MLX_FLOAT32);
-#else
-    return mock_mlx_array_new_data(t->data, shape, t->ndim);
-#endif
-}
 
-llama_model* llama_model_load(const char *gguf_path) {
-    gguf_context *ctx = gguf_load(gguf_path);
-    if (!ctx) return NULL;
-    
-    llama_model *model = calloc(1, sizeof(llama_model));
-    
-    // Parse some basic metadata
-    for (uint64_t i = 0; i < ctx->header.kv_count; i++) {
-                if (strcmp(ctx->kvs[i].name, "llama.block_count") == 0) {
-            if (ctx->kvs[i].type == GGUF_TYPE_UINT32) {
-                model->n_layers = *(uint32_t*)ctx->kvs[i].value;
-            } else if (ctx->kvs[i].type == GGUF_TYPE_UINT64) {
-                model->n_layers = *(uint64_t*)ctx->kvs[i].value;
-            }
-        } else         if (strcmp(ctx->kvs[i].name, "llama.attention.head_count") == 0) {
-            if (ctx->kvs[i].type == GGUF_TYPE_UINT32) {
-                model->n_heads = *(uint32_t*)ctx->kvs[i].value;
-            } else if (ctx->kvs[i].type == GGUF_TYPE_UINT64) {
-                model->n_heads = *(uint64_t*)ctx->kvs[i].value;
-            }
-        } else         if (strcmp(ctx->kvs[i].name, "llama.attention.head_count_kv") == 0) {
-            if (ctx->kvs[i].type == GGUF_TYPE_UINT32) {
-                model->n_kv_heads = *(uint32_t*)ctx->kvs[i].value;
-            } else if (ctx->kvs[i].type == GGUF_TYPE_UINT64) {
-                model->n_kv_heads = *(uint64_t*)ctx->kvs[i].value;
-            }
-        } else         if (strcmp(ctx->kvs[i].name, "llama.embedding_length") == 0) {
-            if (ctx->kvs[i].type == GGUF_TYPE_UINT32) {
-                model->n_embd = *(uint32_t*)ctx->kvs[i].value;
-            } else if (ctx->kvs[i].type == GGUF_TYPE_UINT64) {
-                model->n_embd = *(uint64_t*)ctx->kvs[i].value;
-            }
-        } else         if (strcmp(ctx->kvs[i].name, "llama.feed_forward_length") == 0) {
-            if (ctx->kvs[i].type == GGUF_TYPE_UINT32) {
-                model->n_ff = *(uint32_t*)ctx->kvs[i].value;
-            } else if (ctx->kvs[i].type == GGUF_TYPE_UINT64) {
-                model->n_ff = *(uint64_t*)ctx->kvs[i].value;
-            }
-        } else if (strcmp(ctx->kvs[i].name, "llama.context_length") == 0) {
-            if (ctx->kvs[i].type == GGUF_TYPE_UINT32) {
-                model->params.n_ctx = *(uint32_t*)ctx->kvs[i].value;
-            } else if (ctx->kvs[i].type == GGUF_TYPE_UINT64) {
-                model->params.n_ctx = *(uint64_t*)ctx->kvs[i].value;
-            }
-        }
-    }
-    
-    model->tok_embeddings = load_tensor_array(ctx, "token_embd.weight");
-    model->norm = load_tensor_array(ctx, "output_norm.weight");
-    model->output = load_tensor_array(ctx, "output.weight");
-    
-    if (model->n_layers > 0) {
-        model->layers = calloc(model->n_layers, sizeof(llama_layer));
-        for (int i = 0; i < model->n_layers; i++) {
-            char name[256];
-            
-            snprintf(name, sizeof(name), "blk.%d.attn_q.weight", i);
-            model->layers[i].wq = load_tensor_array(ctx, name);
-            
-            snprintf(name, sizeof(name), "blk.%d.attn_k.weight", i);
-            model->layers[i].wk = load_tensor_array(ctx, name);
-            
-            snprintf(name, sizeof(name), "blk.%d.attn_v.weight", i);
-            model->layers[i].wv = load_tensor_array(ctx, name);
-            
-            snprintf(name, sizeof(name), "blk.%d.attn_output.weight", i);
-            model->layers[i].wo = load_tensor_array(ctx, name);
-            
-            snprintf(name, sizeof(name), "blk.%d.ffn_gate.weight", i);
-            model->layers[i].w1 = load_tensor_array(ctx, name);
-            
-            snprintf(name, sizeof(name), "blk.%d.ffn_down.weight", i);
-            model->layers[i].w2 = load_tensor_array(ctx, name);
-            
-            snprintf(name, sizeof(name), "blk.%d.ffn_up.weight", i);
-            model->layers[i].w3 = load_tensor_array(ctx, name);
-            
-            snprintf(name, sizeof(name), "blk.%d.attn_norm.weight", i);
-            model->layers[i].rms_att_w = load_tensor_array(ctx, name);
-            
-            snprintf(name, sizeof(name), "blk.%d.ffn_norm.weight", i);
-            model->layers[i].rms_ffn_w = load_tensor_array(ctx, name);
-        }
-    }
-    
-    gguf_free(ctx);
-    return model;
-}
+    mlx_array final_norm = rms_norm(x, m->norm_weight, m->norm_eps);
+    mlx_array_free(x);
 
-static void free_array(mlx_array a) {
-#ifdef MLX_BACKEND
-    if (a.ctx) mlx_array_free(a);
-#else
-    mock_mlx_array_free(a);
-#endif
-}
+    mlx_array logits ={NULL};
+    mlx_matmul(&logits, final_norm, m->output_weight, (mlx_stream){NULL});
+    mlx_array_free(final_norm);
 
-void llama_model_free(llama_model *model) {
-    if (!model) return;
-    
-    free_array(model->tok_embeddings);
-    free_array(model->norm);
-    free_array(model->output);
-    
-    if (model->layers) {
-        for (int i = 0; i < model->n_layers; i++) {
-            free_array(model->layers[i].wq);
-            free_array(model->layers[i].wk);
-            free_array(model->layers[i].wv);
-            free_array(model->layers[i].wo);
-            free_array(model->layers[i].w1);
-            free_array(model->layers[i].w2);
-            free_array(model->layers[i].w3);
-            free_array(model->layers[i].rms_att_w);
-            free_array(model->layers[i].rms_ffn_w);
-        }
-        free(model->layers);
-    }
-    
-    free(model);
+    return logits;
 }

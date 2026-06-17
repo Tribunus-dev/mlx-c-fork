@@ -1,112 +1,96 @@
-#include "mlx_c/llama.h"
-#include "gguf.h"
+#include "../include/llama.h"
+#include "mlx/c/array.h"
+#include "mlx/c/ops.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <math.h>
 
-void create_mock_gguf(const char* filename) {
-    FILE *f = fopen(filename, "wb");
-    if (!f) return;
+#define EXPECT_TRUE(cond) \
+    do { \
+        if (!(cond)) { \
+            fprintf(stderr, "%s:%d: Expected condition to be true\n", __FILE__, __LINE__); \
+            exit(1); \
+        } \
+    } while (0)
 
-    // GGUF Magic and version
-    uint32_t magic = GGUF_MAGIC;
-    fwrite(&magic, 4, 1, f);
-    uint32_t version = 1;
-    fwrite(&version, 4, 1, f);
-    
-    uint64_t tensor_count = 2; // tok_embeddings, blk.0.attn_q.weight
-    fwrite(&tensor_count, 8, 1, f);
-    uint64_t kv_count = 2; // block_count, alignment
-    fwrite(&kv_count, 8, 1, f);
-    
-    // KV 1: llama.block_count = 1
-    uint64_t len1 = strlen("llama.block_count");
-    fwrite(&len1, 8, 1, f);
-    fwrite("llama.block_count", 1, len1, f);
-    uint32_t t_kv1 = GGUF_TYPE_UINT32;
-    fwrite(&t_kv1, 4, 1, f);
-    uint32_t block_count = 1;
-    fwrite(&block_count, 4, 1, f);
-    
-    // KV 2: general.alignment = 32
-    uint64_t len2 = strlen("general.alignment");
-    fwrite(&len2, 8, 1, f);
-    fwrite("general.alignment", 1, len2, f);
-    uint32_t t_kv2 = GGUF_TYPE_UINT32;
-    fwrite(&t_kv2, 4, 1, f);
-    uint32_t alignment = 32;
-    fwrite(&alignment, 4, 1, f);
-    
-    // Tensor 1: token_embd.weight
-    uint64_t len3 = strlen("token_embd.weight");
-    fwrite(&len3, 8, 1, f);
-    fwrite("token_embd.weight", 1, len3, f);
-    uint32_t ndim1 = 2;
-    fwrite(&ndim1, 4, 1, f);
-    uint64_t shape1[2] = {128, 128}; // [128, 128]
-    fwrite(shape1, 8, 2, f);
-    uint32_t t_t1 = GGUF_TYPE_FLOAT32;
-    fwrite(&t_t1, 4, 1, f);
-    uint64_t off1 = 0; // offset 0 from data start
-    fwrite(&off1, 8, 1, f);
-    
-    // Tensor 2: blk.0.attn_q.weight
-    uint64_t len4 = strlen("blk.0.attn_q.weight");
-    fwrite(&len4, 8, 1, f);
-    fwrite("blk.0.attn_q.weight", 1, len4, f);
-    uint32_t ndim2 = 2;
-    fwrite(&ndim2, 4, 1, f);
-    uint64_t shape2[2] = {64, 64};
-    fwrite(shape2, 8, 2, f);
-    uint32_t t_t2 = GGUF_TYPE_FLOAT32;
-    fwrite(&t_t2, 4, 1, f);
-    uint64_t off2 = 128 * 128 * 4; // offset after first tensor
-    fwrite(&off2, 8, 1, f);
-    
-    // Align data offset to 32
-    long curr_pos = ftell(f);
-    long padding = (32 - (curr_pos % 32)) % 32;
-    for(long i = 0; i < padding; i++) {
-        fputc(0, f);
-    }
-    
-    // Write tensor data (dummy zeros)
-    long data_size = off2 + 64 * 64 * 4;
-    for(long i = 0; i < data_size; i++) {
-        fputc(0, f);
-    }
-    
-    fclose(f);
+mlx_array create_dummy_array(int* shape, int ndim) {
+    mlx_array a = mlx_array_new_float(0.01f);
+    mlx_array b ={NULL};
+    mlx_broadcast_to(&b, a, shape, ndim, (mlx_stream){NULL});
+    mlx_array_free(a);
+    return b;
 }
 
 int main() {
-    const char *test_file = "test_llama.gguf";
-    create_mock_gguf(test_file);
-    
-    llama_model *model = llama_model_load(test_file);
-    if (!model) {
-        printf("Failed to load model\n");
-        return 1;
-    }
-    
-    if (model->n_layers != 1) {
-        printf("Expected n_layers = 1, got %d\n", model->n_layers);
-        return 1;
-    }
-    
-    if (model->tok_embeddings.ctx == NULL) {
-        printf("Failed to load tok_embeddings array\n");
-        return 1;
-    }
-    
-    if (model->layers[0].wq.ctx == NULL) {
-        printf("Failed to load wq array\n");
-        return 1;
-    }
-    
-    llama_model_free(model);
-    remove(test_file);
-    
-    printf("Tests passed.\n");
+    struct llama_model model;
+    model.n_layers = 1;
+    model.n_heads = 2;
+    model.n_kv_heads = 2;
+    model.dim = 8;
+    model.hidden_dim = 16;
+    model.norm_eps = 1e-5f;
+    model.rope_freq_base = 10000.0f;
+    model.rope_freq_scale = 1.0f;
+
+    int vocab_size = 32;
+    int emb_shape[] = {vocab_size, model.dim};
+    model.tok_embeddings = create_dummy_array(emb_shape, 2);
+
+    int norm_shape[] = {model.dim};
+    model.norm_weight = create_dummy_array(norm_shape, 1);
+
+    int out_shape[] = {model.dim, vocab_size};
+    model.output_weight = create_dummy_array(out_shape, 2);
+
+    struct llama_layer layer;
+    int wq_shape[] = {model.dim, model.dim};
+    layer.attention_wq = create_dummy_array(wq_shape, 2);
+    layer.attention_wk = create_dummy_array(wq_shape, 2);
+    layer.attention_wv = create_dummy_array(wq_shape, 2);
+    layer.attention_wo = create_dummy_array(wq_shape, 2);
+
+    int w1_shape[] = {model.dim, model.hidden_dim};
+    int w2_shape[] = {model.hidden_dim, model.dim};
+    int w3_shape[] = {model.dim, model.hidden_dim};
+    layer.ffn_w1 = create_dummy_array(w1_shape, 2);
+    layer.ffn_w2 = create_dummy_array(w2_shape, 2);
+    layer.ffn_w3 = create_dummy_array(w3_shape, 2);
+
+    layer.attention_norm_weight = create_dummy_array(norm_shape, 1);
+    layer.ffn_norm_weight = create_dummy_array(norm_shape, 1);
+
+    model.layers = &layer;
+
+    int tokens_data[] = {1, 5, 2};
+    mlx_array tokens = mlx_array_new_data(tokens_data, (int[]){3}, 1, MLX_INT32);
+
+    mlx_array logits = llm_forward(&model, tokens, 3);
+
+    EXPECT_TRUE(logits.ctx != NULL);
+    size_t ndim = mlx_array_ndim(logits);
+    EXPECT_TRUE(ndim == 3);
+
+    const int* shape = mlx_array_shape(logits);
+    EXPECT_TRUE(shape[0] == 1);
+    EXPECT_TRUE(shape[1] == 3);
+    EXPECT_TRUE(shape[2] == 32);
+
+    printf("LLaMA forward pass test passed.\n");
+
+    mlx_array_free(logits);
+    mlx_array_free(tokens);
+    mlx_array_free(model.tok_embeddings);
+    mlx_array_free(model.norm_weight);
+    mlx_array_free(model.output_weight);
+    mlx_array_free(layer.attention_wq);
+    mlx_array_free(layer.attention_wk);
+    mlx_array_free(layer.attention_wv);
+    mlx_array_free(layer.attention_wo);
+    mlx_array_free(layer.ffn_w1);
+    mlx_array_free(layer.ffn_w2);
+    mlx_array_free(layer.ffn_w3);
+    mlx_array_free(layer.attention_norm_weight);
+    mlx_array_free(layer.ffn_norm_weight);
+
     return 0;
 }
