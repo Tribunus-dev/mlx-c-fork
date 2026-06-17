@@ -14,6 +14,7 @@ endif()
 option(BUILD_SHARED_LIBS "Build mlx C as a shared library" OFF)
 option(MLX_C_BUILD_EXAMPLES "Build examples for mlx C" ON)
 option(MLX_C_USE_SYSTEM_MLX "Use system MLX" OFF)
+option(MLX_C_BUILD_TESTS "Build tests" ON)
 
 # ----------------------------- mlx -----------------------------
 
@@ -35,13 +36,15 @@ else()
   FetchContent_Declare(
     mlx
     GIT_REPOSITORY "https://github.com/Tribunus-dev/mlx.git"
-    GIT_TAG tribunus-v0.31.2)
+    GIT_TAG tribunus-v0.31.2
+    )
   FetchContent_MakeAvailable(mlx)
 endif()
 
 # ----------------------------- lib -----------------------------
 
 set(mlxc-src
+    ${CMAKE_CURRENT_LIST_DIR}/src/gguf.c
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/array.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/closure.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mlx/c/compile.cpp
@@ -83,6 +86,14 @@ endif()
 
 if(MLX_C_BUILD_EXAMPLES)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/examples)
+endif()
+
+# ----------------------------- Tests -----------------------------
+if(MLX_C_BUILD_TESTS)
+  enable_testing()
+  add_executable(test_gguf tests/test_gguf.c)
+  target_link_libraries(test_gguf PRIVATE mlxc)
+  add_test(NAME test_gguf COMMAND test_gguf)
 endif()
 
 # ----------------------------- Installation -----------------------------
